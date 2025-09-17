@@ -52,7 +52,7 @@ def _fit_xgb(Xtr, ytr, Xte, yte):
     params = _ensure_xgb_compat_params()
     model = XGBRegressor(**params)
     # Early stopping supported for XGBRegressor across versions
-    model.fit(Xtr, ytr, eval_set=[(Xte, yte)], verbose=False, early_stopping_rounds=50)
+    model.fit(Xtr, ytr, eval_set=[(Xte, yte)], verbose=False)
     return model
 
 def _evaluate(model, Xte, yte):
