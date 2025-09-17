@@ -4,31 +4,47 @@ import pandas as pd
 
 API_URL = "http://localhost:8000/forecast"  # change if deployed
 
-st.title("🛒 Walmart Sales Forecasting")
+st.set_page_config(page_title="Walmart Sales Forecast", layout="centered")
+st.title("🧠🔮 Walmart Weekly Sales Forecast")
 
-# User inputs
-store_id = st.number_input("Select Store ID", min_value=1, max_value=45, value=1, step=1)
-horizon = st.slider("Forecast horizon (weeks)", 1, 20, 8)
+with st.form("query"):
+    c1, c2, c3 = st.columns(3)
+    store_id = c1.number_input("Store ID", min_value=1, max_value=45, value=1, step=1)
+    horizon  = c2.number_input("Horizon", min_value=1, max_value=52, value=8, step=1)
+    unit     = c3.selectbox("Unit", ["weeks", "months"], index=0)
 
-if st.button("Get Forecast"):
+    # 🔽 NEW: model selector (auto is default)
+    model_choice = st.selectbox("Model", ["auto", "xgb", "prophet"], index=0,
+                                help="Use 'auto' to select the best model per store based on training summary.")
+
+    submitted = st.form_submit_button("Get Forecast")
+
+if submitted:
     params = {
-        "store_id": store_id,
-        "horizon": horizon,
-        "unit": "weeks",
-        "model_name": "auto",   # 🔹 let API auto-select best model
+        "store_id": int(store_id),
+        "horizon": int(horizon),
+        "unit": unit,
+        "model_name": model_choice,   # 🔽 pass the user's choice to the API
     }
-    resp = requests.get(API_URL, params=params)
-    data = resp.json()
 
-    if not data["ok"]:
-        st.error(data["message"])
+    try:
+        r = requests.get(API_URL, params=params, timeout=30)
+        data = r.json()
+    except Exception as e:
+        st.error(f"Request failed: {e}")
+        st.stop()
+
+    if not data.get("ok"):
+        st.error(data.get("message", "Unknown error"))
     else:
-        # 🔹 Show which model was chosen
-        st.info(f"Model chosen for Store {store_id}: **{data['model_name'].upper()}**")
+        # Show message from API (includes horizon cap note)
+        st.success(data["message"])
 
-        # Display predictions as a table
+        # Emphasize chosen model from the API response (could be auto-resolved)
+        st.info(f"Model used: **{data.get('model_name','?').upper()}**")
+
         df = pd.DataFrame(data["results"])
-        st.dataframe(df)
+        st.dataframe(df, use_container_width=True)
 
-        # Plot line chart
-        st.line_chart(df.set_index("Date")["Pred_Weekly_Sales"])
+        if "Pred_Weekly_Sales" in df.columns:
+            st.line_chart(df.set_index("Date")["Pred_Weekly_Sales"])
