@@ -36,7 +36,7 @@ def train_one_store(store_id: int, df: pd.DataFrame) -> dict:
         subsample=0.8, colsample_bytree=0.8, random_state=42,
         n_jobs=-1, eval_metric="mae"
     )
-    model.fit(Xtr, ytr, eval_set=[(Xte, yte)], verbose=False, early_stopping_rounds=50)
+    model.fit(Xtr, ytr, eval_set=[(Xte, yte)], verbose=False)
 
     pred = model.predict(Xte)
     mae = float(mean_absolute_error(yte, pred))
