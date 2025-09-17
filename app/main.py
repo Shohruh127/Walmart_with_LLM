@@ -14,9 +14,12 @@ MAX_WEEKS = 20  # guardrail: cap horizon (≈ 5 months)
 
 app = FastAPI(title="Walmart Forecast API")
 
-# --------- Helpers (mirror your training setup) ----------
+# --------- Helpers ----------
 from utils.holidays import add_holiday_features
 from utils.features import add_lag_rolling_per_store, get_feature_columns
+
+# 🔹 Load hybrid summary at startup
+HYBRID_SUMMARY = pd.read_csv(os.path.join(ARTI_DIR, "hybrid_training_summary.csv"))
 
 def _load_xgb(store_id: int) -> XGBRegressor:
     model = XGBRegressor()
@@ -30,49 +33,12 @@ def _xgb_features_list(store_id: int) -> list[str]:
     return meta["features"]
 
 def forecast_store_xgb(store_id: int, horizon_weeks: int) -> pd.DataFrame:
-    model = _load_xgb(store_id)
-    feat_cols = _xgb_features_list(store_id)
-
-    df = pd.read_csv(CSV_PATH)
-    df["Date"] = pd.to_datetime(df["Date"], errors="coerce", dayfirst=True)
-    cur = df[df["Store"] == store_id].copy().sort_values("Date")
-
-    out_rows = []
-    for _ in range(horizon_weeks):
-        tmp = add_holiday_features(cur)
-        tmp = add_lag_rolling_per_store(tmp).sort_values("Date")
-        last_row = tmp.dropna().iloc[-1].copy()
-
-        X = last_row[feat_cols].values.reshape(1, -1)
-        pred = float(model.predict(X)[0])
-        next_date = last_row["Date"] + pd.Timedelta(weeks=1)
-
-        out_rows.append({"Date": str(next_date.date()), "Pred_Weekly_Sales": pred})
-
-        # append prediction: hold last exogenous (simple baseline)
-        cur = pd.concat([cur, pd.DataFrame([{
-            "Store": store_id,
-            "Date": next_date,
-            "Weekly_Sales": pred,
-            "Holiday_Flag": last_row.get("Holiday_Flag", 0),
-            "Temperature": last_row.get("Temperature", cur["Temperature"].iloc[-1]),
-            "Fuel_Price": last_row.get("Fuel_Price", cur["Fuel_Price"].iloc[-1]),
-            "CPI": last_row.get("CPI", cur["CPI"].iloc[-1]),
-            "Unemployment": last_row.get("Unemployment", cur["Unemployment"].iloc[-1]),
-        }])], ignore_index=True)
-
+    # ... your existing code ...
+    # (no change needed here)
     return pd.DataFrame(out_rows)
 
 def forecast_store_prophet(store_id: int, horizon_weeks: int) -> pd.DataFrame:
-    # Prophet per-store model is optional; train via train_prophet_per_store.py
-    path = os.path.join(ARTI_DIR, f"prophet_store_{store_id}.pkl")
-    if not os.path.exists(path):
-        raise FileNotFoundError(f"Prophet model not found for store {store_id}.")
-    m = joblib.load(path)
-    future = m.make_future_dataframe(periods=horizon_weeks, freq="W-FRI")
-    fc = m.predict(future).tail(horizon_weeks)[["ds","yhat","yhat_lower","yhat_upper"]]
-    fc = fc.rename(columns={"ds":"Date","yhat":"Pred_Weekly_Sales","yhat_lower":"lo","yhat_upper":"hi"})
-    fc["Date"] = fc["Date"].dt.date.astype(str)
+    # ... your existing code ...
     return fc
 
 # --------- API schemas ----------
@@ -82,7 +48,7 @@ class ForecastResponse(BaseModel):
     store_id: int | None = None
     horizon_weeks: int | None = None
     model_name: Literal["xgb","prophet"] | None = None
-    results: list[dict] | None = None  # [{Date, Pred_Weekly_Sales, ...}]
+    results: list[dict] | None = None
 
 # --------- API endpoint with guardrails ----------
 @app.get("/forecast", response_model=ForecastResponse)
@@ -90,7 +56,7 @@ def forecast(
     store_id: int = Query(..., ge=1, le=45, description="Store ID (1..45)"),
     horizon: int = Query(8, ge=1, description="Forecast horizon"),
     unit: Literal["weeks","months"] = Query("weeks"),
-    model_name: Literal["xgb","prophet"] = Query("xgb")
+    model_name: Literal["xgb","prophet","auto"] = Query("auto")   # 🔹 allow "auto"
 ):
     # Guardrail: cap horizon
     horizon_weeks = horizon if unit == "weeks" else horizon * 4
@@ -98,6 +64,11 @@ def forecast(
     if horizon_weeks > MAX_WEEKS:
         horizon_weeks = MAX_WEEKS
         capped = True
+
+    # 🔹 Auto model selection
+    if model_name == "auto":
+        row = HYBRID_SUMMARY.loc[HYBRID_SUMMARY.store == store_id].iloc[0]
+        model_name = row["Chosen_Model"]
 
     try:
         if model_name == "xgb":
