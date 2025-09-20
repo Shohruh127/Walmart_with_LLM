@@ -131,3 +131,5 @@ builder.add_node("respond", respond)
 builder.add_edge(START, "respond")
 builder.add_edge("respond", END)
 graph = builder.compile()
+app = graph.compile()
+__all__ = ["app"]
