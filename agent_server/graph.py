@@ -10,6 +10,8 @@ from langgraph.graph.message import add_messages
 # Point this to your running Walmart FastAPI service
 BASE_URL = os.getenv("WALMART_API", "http://127.0.0.1:8000")  # must expose GET /forecast
 MAX_WEEKS = int(os.getenv("MAX_WEEKS", "20"))
+SUPPORTED_MODELS = {"auto", "xgb", "prophet"}
+_SUPPORTED_MODELS_STR = "|".join(f'"{m}"' for m in sorted(SUPPORTED_MODELS))
 
 # ===== Lightweight local LLM via Hugging Face =====
 # (Works on CPU; uses GPU automatically if available)
@@ -40,8 +42,8 @@ class AgentState(TypedDict):
 def _llm_extract(user_text: str) -> Dict[str, Any]:
     """Ask the LLM to emit STRICT JSON with the 4 keys."""
     sys = (
-        'Return ONLY JSON with keys: store_id (int), horizon (int), '
-        'unit ("weeks"|"months"), model_name ("auto"|"prophet").'
+        "Return ONLY JSON with keys: store_id (int), horizon (int), "
+        f'unit ("weeks"|"months"), model_name ({_SUPPORTED_MODELS_STR}).'
     )
     prompt = f"{sys}\nUser: {user_text}\nJSON:"
     out = LLM.invoke(prompt).content
@@ -56,13 +58,14 @@ def _llm_extract(user_text: str) -> Dict[str, Any]:
 def _regex_fallback(text: str) -> Dict[str, Any]:
     d: Dict[str, Any] = {}
     m_store = re.search(r"store\s*(\d+)", text, re.I)
-    m_h     = re.search(r"(\d+)\s*(weeks?|months?)", text, re.I)
-    m_model = re.search(r"(prophet|auto)", text, re.I)
-    if m_store: d["store_id"] = int(m_store.group(1))
+    m_h = re.search(r"(\d+)\s*(weeks?|months?)", text, re.I)
+    m_model = re.search(r"(prophet|auto|xgb)", text, re.I)
+    if m_store:
+        d["store_id"] = int(m_store.group(1))
     if m_h:
         d["horizon"] = int(m_h.group(1))
         d["unit"] = "months" if "month" in m_h.group(2).lower() else "weeks"
-    d["model_name"] = (m_model.group(1).lower() if m_model else "auto")
+    d["model_name"] = m_model.group(1).lower() if m_model else "auto"
     return d
 
 def _validate_and_fix(p: Dict[str, Any]):
@@ -78,15 +81,23 @@ def _validate_and_fix(p: Dict[str, Any]):
     if u not in ("weeks", "months"):
         notes.append("unit not recognized → weeks")
         u = "weeks"
-    if m not in ("auto", "prophet"):
+    if m not in SUPPORTED_MODELS:
         notes.append("model not recognized → auto")
         m = "auto"
-    if u == "weeks" and h > MAX_WEEKS:
+
+    # Cap horizon respecting MAX_WEEKS regardless of unit requested
+    weeks_requested = h if u == "weeks" else h * 4
+    if weeks_requested > MAX_WEEKS:
         notes.append(f"horizon capped to {MAX_WEEKS} weeks")
-        h = MAX_WEEKS
+        if u == "weeks":
+            h = MAX_WEEKS
+        else:
+            # Convert back to months rounding down so we never exceed MAX_WEEKS
+            h = max(1, MAX_WEEKS // 4)
     if h <= 0:
         notes.append("horizon <= 0 → set to 1")
         h = 1
+
     return {"store_id": s, "horizon": h, "unit": u, "model_name": m}, notes
 
 def _call_forecast(params: Dict[str, Any]):
